@@ -21,7 +21,6 @@ PRICE_THRESHOLDS = {
 # Destinations by category: (IATA code, display name)
 DESTINATIONS = {
     "domestic_cities": [
-        ("JFK", "New York"),
         ("ORD", "Chicago"),
         ("MSY", "New Orleans"),
         ("BNA", "Nashville"),
@@ -39,6 +38,7 @@ DESTINATIONS = {
         ("ATL", "Atlanta"),
         ("DTW", "Detroit"),
         ("MSP", "Minneapolis"),
+        ("FLL", "Fort Lauderdale"),
     ],
     "central_america": [
         ("CUN", "Cancun"),
@@ -75,6 +75,7 @@ DESTINATIONS = {
         ("MBJ", "Montego Bay"),
         ("SXM", "St. Maarten"),
         ("GCM", "Grand Cayman"),
+        ("SDQ", "Santo Domingo"),
     ],
     "europe": [
         ("LHR", "London"),
