@@ -98,3 +98,29 @@ DESTINATIONS = {
 # Delay between API requests (seconds) to avoid rate limiting
 REQUEST_DELAY_MIN = 2.0
 REQUEST_DELAY_MAX = 5.0
+
+
+def load_all_destinations() -> dict[str, list[tuple[str, str]]]:
+    """Load hardcoded + custom destinations from custom_destinations.json."""
+    import json
+    import os
+
+    merged = {cat: list(dests) for cat, dests in DESTINATIONS.items()}
+
+    custom_file = os.path.join(os.path.dirname(__file__), "custom_destinations.json")
+    try:
+        with open(custom_file) as f:
+            custom = json.load(f)
+        for entry in custom.get("custom", []):
+            code = entry["code"]
+            name = entry["name"]
+            cat = entry["category"]
+            if cat not in merged:
+                merged[cat] = []
+            # Don't add duplicates
+            if not any(c == code for c, _ in merged[cat]):
+                merged[cat].append((code, name))
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        pass
+
+    return merged

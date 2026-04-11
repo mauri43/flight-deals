@@ -12,11 +12,11 @@ from fast_flights import FlightQuery, Passengers, create_query, get_flights
 
 from config import (
     HOME_AIRPORTS,
-    DESTINATIONS,
     PRICE_THRESHOLDS,
     WEEKENDS_AHEAD,
     REQUEST_DELAY_MIN,
     REQUEST_DELAY_MAX,
+    load_all_destinations,
 )
 from lodging import LodgingResult, search_airbnb, format_lodging_for_notification
 
@@ -194,7 +194,9 @@ def search_all() -> list[Deal]:
     total_searches = 0
     errors = 0
 
-    for category, destinations in DESTINATIONS.items():
+    all_destinations = load_all_destinations()
+
+    for category, destinations in all_destinations.items():
         threshold = PRICE_THRESHOLDS.get(category, 400)
         print(f"\n--- {category.upper()} (threshold: ${threshold}) ---")
 
