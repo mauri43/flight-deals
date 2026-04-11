@@ -37,7 +37,6 @@ DESTINATIONS = {
         ("SNA", "Orange County"),
         ("ATL", "Atlanta"),
         ("DTW", "Detroit"),
-        ("MSP", "Minneapolis"),
         ("FLL", "Fort Lauderdale"),
     ],
     "central_america": [
