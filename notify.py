@@ -46,7 +46,6 @@ def _format_flight_field(deal: Deal) -> str:
     if deal.stops == 0:
         lines.append("✅ **Nonstop**")
     elif deal.legs:
-        # Build "1 stop via MIA (1h32m layover)"
         layover_parts = []
         for leg in deal.legs[:-1]:
             part = leg.to_code
@@ -56,7 +55,9 @@ def _format_flight_field(deal: Deal) -> str:
         stop_word = "stop" if deal.stops == 1 else "stops"
         lines.append(f"🔄 **{deal.stops} {stop_word}** via {', '.join(layover_parts)}")
 
-        for i, leg in enumerate(deal.legs):
+    # Always show leg times
+    if deal.legs:
+        for leg in deal.legs:
             dur_h = leg.duration_min // 60
             dur_m = leg.duration_min % 60
             dur_str = f"{dur_h}h{dur_m:02d}m" if dur_h else f"{dur_m}m"
