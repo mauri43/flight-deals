@@ -1,10 +1,11 @@
 """
 Discord bot for managing flight deal destinations.
 Slash commands:
-  /add <code> <category> <name>  — add a destination
+  /add <code> [category] [name]  — add a destination (only code required)
   /remove <code>                 — remove a destination
   /list                          — show all custom destinations
   /categories                    — show available categories
+  /threshold <code> <amount>     — set a custom price threshold
 """
 
 import os
@@ -15,20 +16,67 @@ from discord import app_commands
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 CUSTOM_FILE = os.path.join(os.path.dirname(__file__), "custom_destinations.json")
 
-VALID_CATEGORIES = [
-    "domestic_cities",
-    "central_america",
-    "south_america",
-    "beaches",
-    "europe",
-]
-
 CATEGORY_EMOJI = {
     "domestic_cities": "🏙️",
     "central_america": "🌮",
     "south_america": "🌎",
     "beaches": "🏖️",
     "europe": "✈️",
+    "custom": "📌",
+}
+
+# Known airport → (name, default category) for auto-detection
+# Not exhaustive — just common ones so you don't have to type the name
+KNOWN_AIRPORTS = {
+    # US
+    "JFK": ("New York", "domestic_cities"), "LAX": ("Los Angeles", "domestic_cities"),
+    "ORD": ("Chicago", "domestic_cities"), "SFO": ("San Francisco", "domestic_cities"),
+    "MIA": ("Miami", "beaches"), "SEA": ("Seattle", "domestic_cities"),
+    "DEN": ("Denver", "domestic_cities"), "ATL": ("Atlanta", "domestic_cities"),
+    "BOS": ("Boston", "domestic_cities"), "MSY": ("New Orleans", "domestic_cities"),
+    "AUS": ("Austin", "domestic_cities"), "SAN": ("San Diego", "domestic_cities"),
+    "BNA": ("Nashville", "domestic_cities"), "PDX": ("Portland", "domestic_cities"),
+    "SAV": ("Savannah", "domestic_cities"), "CHS": ("Charleston", "domestic_cities"),
+    "HNL": ("Honolulu", "beaches"), "OGG": ("Maui", "beaches"),
+    "LAS": ("Las Vegas", "domestic_cities"), "PHX": ("Phoenix", "domestic_cities"),
+    "MSP": ("Minneapolis", "domestic_cities"), "DTW": ("Detroit", "domestic_cities"),
+    "RDU": ("Raleigh", "domestic_cities"), "PIT": ("Pittsburgh", "domestic_cities"),
+    "TPA": ("Tampa", "beaches"), "FLL": ("Fort Lauderdale", "beaches"),
+    # Mexico / Central America
+    "CUN": ("Cancun", "beaches"), "MEX": ("Mexico City", "central_america"),
+    "SJO": ("San Jose, Costa Rica", "central_america"), "LIR": ("Liberia, Costa Rica", "central_america"),
+    "BZE": ("Belize City", "central_america"), "GUA": ("Guatemala City", "central_america"),
+    "PTY": ("Panama City", "central_america"), "PVR": ("Puerto Vallarta", "beaches"),
+    "SJD": ("Cabo San Lucas", "beaches"), "GDL": ("Guadalajara", "central_america"),
+    # Caribbean
+    "SJU": ("San Juan", "beaches"), "PUJ": ("Punta Cana", "beaches"),
+    "MBJ": ("Montego Bay", "beaches"), "NAS": ("Nassau", "beaches"),
+    "AUA": ("Aruba", "beaches"), "STT": ("St. Thomas", "beaches"),
+    "PLS": ("Turks & Caicos", "beaches"), "SXM": ("St. Maarten", "beaches"),
+    "GCM": ("Grand Cayman", "beaches"),
+    # South America
+    "BOG": ("Bogota", "south_america"), "MDE": ("Medellin", "south_america"),
+    "CTG": ("Cartagena", "south_america"), "LIM": ("Lima", "south_america"),
+    "EZE": ("Buenos Aires", "south_america"), "SCL": ("Santiago", "south_america"),
+    "GIG": ("Rio de Janeiro", "south_america"), "GRU": ("Sao Paulo", "south_america"),
+    "UIO": ("Quito", "south_america"),
+    # Europe
+    "LHR": ("London", "europe"), "CDG": ("Paris", "europe"),
+    "FCO": ("Rome", "europe"), "BCN": ("Barcelona", "europe"),
+    "LIS": ("Lisbon", "europe"), "AMS": ("Amsterdam", "europe"),
+    "DUB": ("Dublin", "europe"), "MAD": ("Madrid", "europe"),
+    "ATH": ("Athens", "europe"), "KEF": ("Reykjavik", "europe"),
+    "BER": ("Berlin", "europe"), "PRG": ("Prague", "europe"),
+    "CPH": ("Copenhagen", "europe"), "VCE": ("Venice", "europe"),
+    "EDI": ("Edinburgh", "europe"), "MUC": ("Munich", "europe"),
+    "ZRH": ("Zurich", "europe"), "OSL": ("Oslo", "europe"),
+    "HEL": ("Helsinki", "europe"), "BUD": ("Budapest", "europe"),
+    "WAW": ("Warsaw", "europe"), "VIE": ("Vienna", "europe"),
+    "MXP": ("Milan", "europe"), "FLR": ("Florence", "europe"),
+    "NAP": ("Naples", "europe"), "OPO": ("Porto", "europe"),
+    "DPS": ("Bali", "europe"),  # uses europe threshold
+    "NRT": ("Tokyo", "europe"), "HND": ("Tokyo Haneda", "europe"),
+    "ICN": ("Seoul", "europe"),
 }
 
 
@@ -58,22 +106,27 @@ class DealBot(discord.Client):
 bot = DealBot()
 
 
-@bot.tree.command(name="add", description="Add a destination to search for deals")
+@bot.tree.command(name="add", description="Add a destination — just the airport code is enough")
 @app_commands.describe(
     code="3-letter airport code (e.g. CUN, BCN, JFK)",
-    category="Category for price thresholds",
-    name="Display name (e.g. Cancun, Barcelona)",
+    category="Override category (auto-detected if not set)",
+    name="Override display name (auto-detected if not set)",
 )
 @app_commands.choices(
     category=[
-        app_commands.Choice(name="🏙️ Domestic Cities ($200 threshold)", value="domestic_cities"),
-        app_commands.Choice(name="🌮 Central America ($300 threshold)", value="central_america"),
-        app_commands.Choice(name="🌎 South America ($450 threshold)", value="south_america"),
-        app_commands.Choice(name="🏖️ Beaches ($350 threshold)", value="beaches"),
-        app_commands.Choice(name="✈️ Europe ($500 threshold)", value="europe"),
+        app_commands.Choice(name="🏙️ Domestic Cities ($200)", value="domestic_cities"),
+        app_commands.Choice(name="🌮 Central America ($300)", value="central_america"),
+        app_commands.Choice(name="🏖️ Beaches ($350)", value="beaches"),
+        app_commands.Choice(name="🌎 South America ($450)", value="south_america"),
+        app_commands.Choice(name="✈️ Europe ($500)", value="europe"),
     ]
 )
-async def add_destination(interaction: discord.Interaction, code: str, category: str, name: str):
+async def add_destination(
+    interaction: discord.Interaction,
+    code: str,
+    category: str | None = None,
+    name: str | None = None,
+):
     code = code.upper().strip()
     if len(code) != 3 or not code.isalpha():
         await interaction.response.send_message("❌ Airport code must be 3 letters (e.g. CUN)", ephemeral=True)
@@ -81,14 +134,20 @@ async def add_destination(interaction: discord.Interaction, code: str, category:
 
     data = load_custom()
 
-    # Check if already exists
     for dest in data["custom"]:
         if dest["code"] == code:
             await interaction.response.send_message(
-                f"⚠️ **{code}** ({dest['name']}) is already in your destinations under {dest['category']}",
+                f"⚠️ **{code}** ({dest['name']}) is already in your destinations",
                 ephemeral=True,
             )
             return
+
+    # Auto-detect name and category from known airports
+    known = KNOWN_AIRPORTS.get(code)
+    if not name:
+        name = known[0] if known else code
+    if not category:
+        category = known[1] if known else "domestic_cities"
 
     data["custom"].append({
         "code": code,
@@ -97,9 +156,13 @@ async def add_destination(interaction: discord.Interaction, code: str, category:
     })
     save_custom(data)
 
-    emoji = CATEGORY_EMOJI.get(category, "✈️")
+    emoji = CATEGORY_EMOJI.get(category, "📌")
+    auto_note = ""
+    if not known and not category:
+        auto_note = "\n💡 *Defaulted to Domestic Cities. Use `/add` with category to change.*"
+
     await interaction.response.send_message(
-        f"✅ Added **{name}** ({code}) to {emoji} {category.replace('_', ' ').title()}\n"
+        f"✅ Added **{name}** ({code}) to {emoji} {category.replace('_', ' ').title()}{auto_note}\n"
         f"It'll be included in the next search run."
     )
 
@@ -110,17 +173,23 @@ async def remove_destination(interaction: discord.Interaction, code: str):
     code = code.upper().strip()
     data = load_custom()
 
-    original_len = len(data["custom"])
-    data["custom"] = [d for d in data["custom"] if d["code"] != code]
+    removed = None
+    new_custom = []
+    for d in data["custom"]:
+        if d["code"] == code:
+            removed = d
+        else:
+            new_custom.append(d)
 
-    if len(data["custom"]) == original_len:
+    if not removed:
         await interaction.response.send_message(
             f"❌ **{code}** not found in custom destinations", ephemeral=True
         )
         return
 
+    data["custom"] = new_custom
     save_custom(data)
-    await interaction.response.send_message(f"🗑️ Removed **{code}** from custom destinations")
+    await interaction.response.send_message(f"🗑️ Removed **{removed['name']}** ({code})")
 
 
 @bot.tree.command(name="list", description="Show all custom destinations")
@@ -129,7 +198,8 @@ async def list_destinations(interaction: discord.Interaction):
 
     if not data["custom"]:
         await interaction.response.send_message(
-            "No custom destinations added yet. Use `/add` to add some!",
+            "No custom destinations added yet. Use `/add` to add some!\n"
+            "Example: `/add BCN` — that's it, I'll figure out the rest.",
             ephemeral=True,
         )
         return
@@ -140,7 +210,7 @@ async def list_destinations(interaction: discord.Interaction):
         by_cat.setdefault(d["category"], []).append(d)
 
     for cat, dests in by_cat.items():
-        emoji = CATEGORY_EMOJI.get(cat, "✈️")
+        emoji = CATEGORY_EMOJI.get(cat, "📌")
         lines.append(f"{emoji} **{cat.replace('_', ' ').title()}**")
         for d in dests:
             lines.append(f"  `{d['code']}` — {d['name']}")
@@ -149,7 +219,7 @@ async def list_destinations(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines))
 
 
-@bot.tree.command(name="categories", description="Show available categories and their price thresholds")
+@bot.tree.command(name="categories", description="Show categories and their price thresholds")
 async def show_categories(interaction: discord.Interaction):
     msg = (
         "**Categories & Thresholds (round trip):**\n\n"
@@ -157,7 +227,9 @@ async def show_categories(interaction: discord.Interaction):
         "🌮 **Central America** — under $300\n"
         "🏖️ **Beaches** — under $350\n"
         "🌎 **South America** — under $450\n"
-        "✈️ **Europe** — under $500"
+        "✈️ **Europe** — under $500\n\n"
+        "*When you `/add` an airport, the category is auto-detected. "
+        "Override it if you want a different threshold.*"
     )
     await interaction.response.send_message(msg, ephemeral=True)
 
