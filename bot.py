@@ -24,11 +24,11 @@ CATEGORY_EMOJI = {
 }
 
 CATEGORY_CHOICES = [
-    app_commands.Choice(name="🏙️ Domestic Cities ($200)", value="domestic_cities"),
-    app_commands.Choice(name="🌮 Central America ($300)", value="central_america"),
-    app_commands.Choice(name="🏖️ Beaches ($350)", value="beaches"),
-    app_commands.Choice(name="🌎 South America ($450)", value="south_america"),
-    app_commands.Choice(name="✈️ Europe ($500)", value="europe"),
+    app_commands.Choice(name="Alert under $200 (like domestic)", value="domestic_cities"),
+    app_commands.Choice(name="Alert under $300 (like central america)", value="central_america"),
+    app_commands.Choice(name="Alert under $350 (like beaches)", value="beaches"),
+    app_commands.Choice(name="Alert under $450 (like south america)", value="south_america"),
+    app_commands.Choice(name="Alert under $500 (like europe)", value="europe"),
 ]
 
 # Known airport → (name, default category) for auto-detection
@@ -113,10 +113,10 @@ bot = DealBot()
 
 # ── /add — add a single airport ──────────────────────────────────────────
 
-@bot.tree.command(name="add", description="Add an airport to search for deals")
+@bot.tree.command(name="add", description="Add an extra airport to track on top of built-in lists")
 @app_commands.describe(
-    code="3-letter airport code (e.g. CUN, BCN, MEX)",
-    category="Price threshold category (auto-detected for known airports)",
+    code="3-letter airport code (e.g. MEX, SDQ, BUD)",
+    category="What price threshold to use for this airport",
     name="Display name (auto-detected for known airports)",
 )
 @app_commands.choices(category=CATEGORY_CHOICES)
