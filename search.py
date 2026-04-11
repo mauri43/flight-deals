@@ -18,6 +18,7 @@ from config import (
     REQUEST_DELAY_MIN,
     REQUEST_DELAY_MAX,
 )
+from lodging import LodgingResult, search_airbnb, format_lodging_for_notification
 
 
 @dataclass
@@ -32,6 +33,7 @@ class Deal:
     threshold: int
     airline: str
     flights_url: str
+    lodging: LodgingResult | None = None
 
 
 @dataclass
@@ -176,4 +178,19 @@ def search_all() -> list[Deal]:
                     time.sleep(delay)
 
     print(f"\n=== Done: {total_searches} searches, {len(deals)} deals, {errors} errors ===")
+
+    # Enrich deals with lodging data — deduplicate by destination+dates
+    if deals:
+        print(f"\n=== Fetching Airbnb data for {len(deals)} deals ===")
+        lodging_cache: dict[str, LodgingResult | None] = {}
+        for deal in deals:
+            cache_key = f"{deal.destination_code}|{deal.depart_date}|{deal.return_date}"
+            if cache_key not in lodging_cache:
+                print(f"  Airbnb: {deal.destination_name} ({deal.depart_date} to {deal.return_date})...", flush=True)
+                lodging_cache[cache_key] = search_airbnb(
+                    deal.destination_code, deal.depart_date, deal.return_date,
+                )
+                time.sleep(random.uniform(2.0, 4.0))
+            deal.lodging = lodging_cache[cache_key]
+
     return deals
