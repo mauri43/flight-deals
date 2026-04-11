@@ -1,11 +1,10 @@
 """
 Discord bot for managing flight deal destinations.
 Slash commands:
-  /add <code> [category] [name]  — add a destination (only code required)
-  /remove <code>                 — remove a destination
-  /list                          — show all custom destinations
+  /add <code> [category] [name]  — add an airport to search
+  /remove <code>                 — remove a custom airport
+  /list                          — show all custom airports
   /categories                    — show available categories
-  /threshold <code> <amount>     — set a custom price threshold
 """
 
 import os
@@ -22,11 +21,17 @@ CATEGORY_EMOJI = {
     "south_america": "🌎",
     "beaches": "🏖️",
     "europe": "✈️",
-    "custom": "📌",
 }
 
+CATEGORY_CHOICES = [
+    app_commands.Choice(name="🏙️ Domestic Cities ($200)", value="domestic_cities"),
+    app_commands.Choice(name="🌮 Central America ($300)", value="central_america"),
+    app_commands.Choice(name="🏖️ Beaches ($350)", value="beaches"),
+    app_commands.Choice(name="🌎 South America ($450)", value="south_america"),
+    app_commands.Choice(name="✈️ Europe ($500)", value="europe"),
+]
+
 # Known airport → (name, default category) for auto-detection
-# Not exhaustive — just common ones so you don't have to type the name
 KNOWN_AIRPORTS = {
     # US
     "JFK": ("New York", "domestic_cities"), "LAX": ("Los Angeles", "domestic_cities"),
@@ -50,6 +55,7 @@ KNOWN_AIRPORTS = {
     "SJD": ("Cabo San Lucas", "beaches"), "GDL": ("Guadalajara", "central_america"),
     # Caribbean
     "SJU": ("San Juan", "beaches"), "PUJ": ("Punta Cana", "beaches"),
+    "SDQ": ("Santo Domingo", "beaches"), "STI": ("Santiago, DR", "beaches"),
     "MBJ": ("Montego Bay", "beaches"), "NAS": ("Nassau", "beaches"),
     "AUA": ("Aruba", "beaches"), "STT": ("St. Thomas", "beaches"),
     "PLS": ("Turks & Caicos", "beaches"), "SXM": ("St. Maarten", "beaches"),
@@ -74,9 +80,8 @@ KNOWN_AIRPORTS = {
     "WAW": ("Warsaw", "europe"), "VIE": ("Vienna", "europe"),
     "MXP": ("Milan", "europe"), "FLR": ("Florence", "europe"),
     "NAP": ("Naples", "europe"), "OPO": ("Porto", "europe"),
-    "DPS": ("Bali", "europe"),  # uses europe threshold
-    "NRT": ("Tokyo", "europe"), "HND": ("Tokyo Haneda", "europe"),
-    "ICN": ("Seoul", "europe"),
+    "DPS": ("Bali", "europe"), "NRT": ("Tokyo", "europe"),
+    "HND": ("Tokyo Haneda", "europe"), "ICN": ("Seoul", "europe"),
 }
 
 
@@ -106,21 +111,15 @@ class DealBot(discord.Client):
 bot = DealBot()
 
 
-@bot.tree.command(name="add", description="Add a destination — just the airport code is enough")
+# ── /add — add a single airport ──────────────────────────────────────────
+
+@bot.tree.command(name="add", description="Add an airport to search for deals")
 @app_commands.describe(
-    code="3-letter airport code (e.g. CUN, BCN, JFK)",
-    category="Override category (auto-detected if not set)",
-    name="Override display name (auto-detected if not set)",
+    code="3-letter airport code (e.g. CUN, BCN, MEX)",
+    category="Price threshold category (auto-detected for known airports)",
+    name="Display name (auto-detected for known airports)",
 )
-@app_commands.choices(
-    category=[
-        app_commands.Choice(name="🏙️ Domestic Cities ($200)", value="domestic_cities"),
-        app_commands.Choice(name="🌮 Central America ($300)", value="central_america"),
-        app_commands.Choice(name="🏖️ Beaches ($350)", value="beaches"),
-        app_commands.Choice(name="🌎 South America ($450)", value="south_america"),
-        app_commands.Choice(name="✈️ Europe ($500)", value="europe"),
-    ]
-)
+@app_commands.choices(category=CATEGORY_CHOICES)
 async def add_destination(
     interaction: discord.Interaction,
     code: str,
@@ -137,17 +136,28 @@ async def add_destination(
     for dest in data["custom"]:
         if dest["code"] == code:
             await interaction.response.send_message(
-                f"⚠️ **{code}** ({dest['name']}) is already in your destinations",
+                f"⚠️ **{code}** ({dest['name']}) is already added",
                 ephemeral=True,
             )
             return
 
-    # Auto-detect name and category from known airports
+    # Auto-detect from known airports
     known = KNOWN_AIRPORTS.get(code)
+
     if not name:
         name = known[0] if known else code
+
     if not category:
-        category = known[1] if known else "domestic_cities"
+        if known:
+            category = known[1]
+        else:
+            # Unknown airport with no category — ask them to pick one
+            await interaction.response.send_message(
+                f"❓ I don't recognize **{code}** — please re-run with a category selected so I know the price threshold.\n"
+                f"Example: `/add {code} category:Beaches`",
+                ephemeral=True,
+            )
+            return
 
     data["custom"].append({
         "code": code,
@@ -157,15 +167,13 @@ async def add_destination(
     save_custom(data)
 
     emoji = CATEGORY_EMOJI.get(category, "📌")
-    auto_note = ""
-    if not known and not category:
-        auto_note = "\n💡 *Defaulted to Domestic Cities. Use `/add` with category to change.*"
-
     await interaction.response.send_message(
-        f"✅ Added **{name}** ({code}) to {emoji} {category.replace('_', ' ').title()}{auto_note}\n"
+        f"✅ Added **{name}** ({code}) — {emoji} {category.replace('_', ' ').title()} threshold\n"
         f"It'll be included in the next search run."
     )
 
+
+# ── /remove — remove a custom airport ────────────────────────────────────
 
 @bot.tree.command(name="remove", description="Remove a custom destination")
 @app_commands.describe(code="3-letter airport code to remove")
@@ -192,19 +200,23 @@ async def remove_destination(interaction: discord.Interaction, code: str):
     await interaction.response.send_message(f"🗑️ Removed **{removed['name']}** ({code})")
 
 
-@bot.tree.command(name="list", description="Show all custom destinations")
+# ── /list — show custom airports ─────────────────────────────────────────
+
+@bot.tree.command(name="list", description="Show all custom destinations you've added")
 async def list_destinations(interaction: discord.Interaction):
     data = load_custom()
 
     if not data["custom"]:
         await interaction.response.send_message(
-            "No custom destinations added yet. Use `/add` to add some!\n"
-            "Example: `/add BCN` — that's it, I'll figure out the rest.",
+            "No custom destinations added yet.\n\n"
+            "**Add an airport:** `/add MEX` — adds Mexico City\n"
+            "**Unknown airport?** `/add SDQ category:Beaches` — you pick the threshold",
             ephemeral=True,
         )
         return
 
-    lines = ["**Custom Destinations:**\n"]
+    lines = ["**Your Custom Destinations:**\n"
+             "*These are searched on top of the built-in lists.*\n"]
     by_cat: dict[str, list] = {}
     for d in data["custom"]:
         by_cat.setdefault(d["category"], []).append(d)
@@ -219,17 +231,19 @@ async def list_destinations(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines))
 
 
+# ── /categories — show thresholds ────────────────────────────────────────
+
 @bot.tree.command(name="categories", description="Show categories and their price thresholds")
 async def show_categories(interaction: discord.Interaction):
     msg = (
-        "**Categories & Thresholds (round trip):**\n\n"
-        "🏙️ **Domestic Cities** — under $200\n"
-        "🌮 **Central America** — under $300\n"
-        "🏖️ **Beaches** — under $350\n"
-        "🌎 **South America** — under $450\n"
-        "✈️ **Europe** — under $500\n\n"
-        "*When you `/add` an airport, the category is auto-detected. "
-        "Override it if you want a different threshold.*"
+        "**Categories & Price Thresholds (round trip):**\n\n"
+        "🏙️ **Domestic Cities** — alert under $200\n"
+        "🌮 **Central America** — alert under $300\n"
+        "🏖️ **Beaches** — alert under $350\n"
+        "🌎 **South America** — alert under $450\n"
+        "✈️ **Europe** — alert under $500\n\n"
+        "*The category just sets the price threshold. When you `/add` a known airport, "
+        "the category is auto-picked. For unknown airports, you choose.*"
     )
     await interaction.response.send_message(msg, ephemeral=True)
 
