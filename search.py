@@ -34,26 +34,40 @@ class Deal:
     flights_url: str
 
 
-def get_upcoming_weekends(weeks: int = WEEKENDS_AHEAD) -> list[tuple[str, str, str]]:
-    """Return (friday_date, sunday_date, monday_date) strings for upcoming weekends."""
+@dataclass
+class WeekendTrip:
+    depart_date: str
+    return_date: str
+    label: str  # e.g. "Fri->Sun", "Thu->Mon"
+    min_depart_hour: int | None = None  # e.g. 17 for "after 5pm"
+
+
+def get_upcoming_trips(weeks: int = WEEKENDS_AHEAD) -> list[WeekendTrip]:
+    """Return weekend trip combos: Fri->Sun, Fri->Mon, Thu eve->Sun, Thu eve->Mon."""
     today = datetime.now()
-    # Find next Friday
     days_until_friday = (4 - today.weekday()) % 7
     if days_until_friday == 0 and today.hour >= 12:
         days_until_friday = 7
     next_friday = today + timedelta(days=max(days_until_friday, 1))
 
-    weekends = []
+    trips = []
     for i in range(weeks):
         friday = next_friday + timedelta(weeks=i)
+        thursday = friday - timedelta(days=1)
         sunday = friday + timedelta(days=2)
         monday = friday + timedelta(days=3)
-        weekends.append((
-            friday.strftime("%Y-%m-%d"),
-            sunday.strftime("%Y-%m-%d"),
-            monday.strftime("%Y-%m-%d"),
-        ))
-    return weekends
+
+        thu = thursday.strftime("%Y-%m-%d")
+        fri = friday.strftime("%Y-%m-%d")
+        sun = sunday.strftime("%Y-%m-%d")
+        mon = monday.strftime("%Y-%m-%d")
+
+        trips.append(WeekendTrip(fri, sun, "Fri->Sun"))
+        trips.append(WeekendTrip(fri, mon, "Fri->Mon"))
+        trips.append(WeekendTrip(thu, sun, "Thu->Sun", min_depart_hour=17))
+        trips.append(WeekendTrip(thu, mon, "Thu->Mon", min_depart_hour=17))
+
+    return trips
 
 
 def build_google_flights_url(origin: str, dest: str, depart: str, ret: str) -> str:
@@ -64,8 +78,11 @@ def build_google_flights_url(origin: str, dest: str, depart: str, ret: str) -> s
     )
 
 
-def search_route(origin: str, dest: str, depart: str, ret: str) -> tuple[int | None, str]:
-    """Search a single round-trip route. Returns (cheapest_price, airline) or (None, '')."""
+def search_route(
+    origin: str, dest: str, depart: str, ret: str, min_depart_hour: int | None = None
+) -> tuple[int | None, str]:
+    """Search a single round-trip route. Returns (cheapest_price, airline) or (None, '').
+    If min_depart_hour is set, only considers flights departing at or after that hour."""
     try:
         query = create_query(
             flights=[
@@ -83,10 +100,19 @@ def search_route(origin: str, dest: str, depart: str, ret: str) -> tuple[int | N
             best_price = None
             best_airline = ""
             for flight in results:
-                if flight.price and flight.price > 0:
-                    if best_price is None or flight.price < best_price:
-                        best_price = flight.price
-                        best_airline = ", ".join(flight.airlines) if flight.airlines else ""
+                if not (flight.price and flight.price > 0):
+                    continue
+                # Filter by departure hour if required
+                if min_depart_hour is not None and flight.flights:
+                    outbound = flight.flights[0]
+                    if outbound.departure and outbound.departure.time:
+                        if outbound.departure.time[0] < min_depart_hour:
+                            continue
+                    else:
+                        continue  # skip if no time info
+                if best_price is None or flight.price < best_price:
+                    best_price = flight.price
+                    best_airline = ", ".join(flight.airlines) if flight.airlines else ""
             return best_price, best_airline
     except Exception as e:
         print(f"  Error searching {origin}->{dest} ({depart}): {e}")
@@ -95,7 +121,7 @@ def search_route(origin: str, dest: str, depart: str, ret: str) -> tuple[int | N
 
 def search_all() -> list[Deal]:
     """Run all searches and return deals that beat the price threshold."""
-    weekends = get_upcoming_weekends()
+    trips = get_upcoming_trips()
     deals: list[Deal] = []
     total_searches = 0
     errors = 0
@@ -109,38 +135,45 @@ def search_all() -> list[Deal]:
                 if origin == dest_code:
                     continue
 
-                for fri, sun, mon in weekends:
-                    for ret_date, trip_label in [(sun, "Fri->Sun"), (mon, "Fri->Mon")]:
-                        total_searches += 1
-                        print(f"  {origin}->{dest_code} {trip_label} {fri}...", end=" ", flush=True)
+                for trip in trips:
+                    total_searches += 1
+                    print(
+                        f"  {origin}->{dest_code} {trip.label} {trip.depart_date}...",
+                        end=" ", flush=True,
+                    )
 
-                        price, airline = search_route(origin, dest_code, fri, ret_date)
+                    price, airline = search_route(
+                        origin, dest_code,
+                        trip.depart_date, trip.return_date,
+                        min_depart_hour=trip.min_depart_hour,
+                    )
 
-                        if price is None:
-                            print("no results")
-                            errors += 1
-                        elif price <= threshold:
-                            print(f"${price} ({airline}) *** DEAL ***")
-                            deals.append(Deal(
-                                origin=origin,
-                                destination_code=dest_code,
-                                destination_name=dest_name,
-                                category=category,
-                                depart_date=fri,
-                                return_date=ret_date,
-                                price=price,
-                                threshold=threshold,
-                                airline=airline,
-                                flights_url=build_google_flights_url(
-                                    origin, dest_code, fri, ret_date
-                                ),
-                            ))
-                        else:
-                            print(f"${price}")
+                    if price is None:
+                        print("no results")
+                        errors += 1
+                    elif price <= threshold:
+                        print(f"${price} ({airline}) *** DEAL ***")
+                        deals.append(Deal(
+                            origin=origin,
+                            destination_code=dest_code,
+                            destination_name=dest_name,
+                            category=category,
+                            depart_date=trip.depart_date,
+                            return_date=trip.return_date,
+                            price=price,
+                            threshold=threshold,
+                            airline=airline,
+                            flights_url=build_google_flights_url(
+                                origin, dest_code,
+                                trip.depart_date, trip.return_date,
+                            ),
+                        ))
+                    else:
+                        print(f"${price}")
 
-                        # Rate limiting
-                        delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
-                        time.sleep(delay)
+                    # Rate limiting
+                    delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
+                    time.sleep(delay)
 
     print(f"\n=== Done: {total_searches} searches, {len(deals)} deals, {errors} errors ===")
     return deals
