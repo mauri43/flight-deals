@@ -103,9 +103,22 @@ class AirbnbPick:
 
 
 @dataclass
+class HotelResult:
+    name: str
+    per_night: float
+    total_price: float
+    nights: int
+    rating: float
+    reviews: int
+    deal_pct: int  # 0 if not a deal, e.g. 25 for "25% less than usual"
+    reason: str
+
+
+@dataclass
 class LodgingResult:
     airbnb_listings: list[AirbnbListing]
     picks: list[AirbnbPick]  # 3 curated picks with reasoning
+    hotel: HotelResult | None  # best hotel deal, shown only if beats Airbnb
     airbnb_search_url: str
     nights: int
     destination_vibe: str
@@ -262,9 +275,26 @@ def search_airbnb(
         # Select 3 curated picks with reasoning
         picks = _select_picks(listings, vibe)
 
+        # Search hotels — only include if significantly better than Airbnb
+        hotel = None
+        try:
+            hotel_result = search_hotels(dest_code, checkin, checkout)
+            if hotel_result and picks:
+                best_airbnb_total = min(p.listing.total_price for p in picks)
+                # Show hotel if: it's cheaper than the cheapest Airbnb pick AND
+                # (it has a deal tag OR it's a well-rated chain with good price)
+                is_cheaper = hotel_result.total_price < best_airbnb_total * 0.9
+                is_deal = hotel_result.deal_pct >= 15
+                is_quality = hotel_result.rating >= 4.0 and hotel_result.total_price <= best_airbnb_total
+                if is_cheaper or (is_deal and is_quality):
+                    hotel = hotel_result
+        except Exception as e:
+            print(f"  [hotels] Skipped for {dest_code}: {e}")
+
         return LodgingResult(
             airbnb_listings=listings[:10],
             picks=picks,
+            hotel=hotel,
             airbnb_search_url=full_url,
             nights=nights,
             destination_vibe=vibe,
@@ -379,6 +409,132 @@ def _find_nested(d, target, depth=0):
             if result is not None:
                 return result
     return None
+
+
+def search_hotels(
+    dest_code: str,
+    checkin: str,
+    checkout: str,
+) -> HotelResult | None:
+    """Search Google Hotels for the best hotel deal near a destination."""
+    dest_info = DESTINATION_SEARCH.get(dest_code)
+    if not dest_info:
+        return None
+
+    query = dest_info["query"]
+
+    from datetime import datetime
+    d1 = datetime.strptime(checkin, "%Y-%m-%d")
+    d2 = datetime.strptime(checkout, "%Y-%m-%d")
+    nights = (d2 - d1).days
+
+    # Format dates for Google query
+    checkin_fmt = d1.strftime("%b %-d")
+    checkout_fmt = d2.strftime("%-d")
+    q = f"hotels in {query} {checkin_fmt}-{checkout_fmt} {d1.year}"
+
+    try:
+        r = cffi_requests.get(
+            "https://www.google.com/travel/hotels",
+            params={"q": q},
+            impersonate="chrome124",
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+
+        # Extract hotels with prices and deal tags
+        hotels = []
+
+        # Parse "Prices starting from $XXX, Hotel Name [DEAL XX% less than usual]"
+        entries = re.findall(
+            r"Prices starting from \$(\d+),\s*([^\"<]+?)(?:\\u0026|\")",
+            r.text,
+        )
+        # Parse ratings
+        ratings_map: dict[str, tuple[float, int]] = {}
+        for rating, reviews, name in re.findall(
+            r"(\d+\.\d+) out of 5 stars from ([\d,]+) reviews,\s*([^\"<]+?)(?:\\u0026|\")",
+            r.text,
+        ):
+            clean_name = name.strip().rstrip("\\")
+            ratings_map[clean_name] = (float(rating), int(reviews.replace(",", "")))
+
+        # Parse deal percentages
+        deal_map: dict[str, int] = {}
+        for name, pct in re.findall(
+            r"Prices starting from \$\d+,\s*([^\"<]+?)(?:GREAT )?DEAL\s+(\d+)% less than usual",
+            r.text,
+        ):
+            clean_name = name.strip().rstrip("\\")
+            deal_map[clean_name] = int(pct)
+
+        seen = set()
+        for price_str, raw_name in entries:
+            # Clean name — remove DEAL/GREAT suffixes
+            name = re.sub(r"\s*(GREAT\s*)?DEAL\s*$", "", raw_name).strip().rstrip("\\")
+            if name in seen:
+                continue
+            seen.add(name)
+
+            price = int(price_str)
+            total = price * nights
+            rating, reviews = ratings_map.get(name, (0.0, 0))
+            deal_pct = deal_map.get(name, 0)
+
+            hotels.append({
+                "name": name,
+                "per_night": price,
+                "total": total,
+                "rating": rating,
+                "reviews": reviews,
+                "deal_pct": deal_pct,
+            })
+
+        if not hotels:
+            return None
+
+        # Find the best hotel deal: prioritize deal %, then rating, then price
+        # Only consider hotels with rating >= 4.0 and reasonable reviews
+        good_hotels = [h for h in hotels if h["rating"] >= 4.0 and h["reviews"] >= 50]
+        if not good_hotels:
+            good_hotels = [h for h in hotels if h["rating"] >= 3.5]
+        if not good_hotels:
+            good_hotels = hotels
+
+        # Score: deal hotels get massive boost
+        def hotel_score(h):
+            score = h["per_night"]
+            if h["deal_pct"] >= 20:
+                score *= 0.6
+            elif h["deal_pct"] >= 10:
+                score *= 0.8
+            if h["rating"] >= 4.5:
+                score *= 0.85
+            elif h["rating"] >= 4.0:
+                score *= 0.92
+            return score
+
+        best = min(good_hotels, key=hotel_score)
+
+        reason = f"{best['rating']}★ ({best['reviews']:,} reviews)"
+        if best["deal_pct"]:
+            reason += f", {best['deal_pct']}% less than usual"
+
+        return HotelResult(
+            name=best["name"],
+            per_night=best["per_night"],
+            total_price=best["total"],
+            nights=nights,
+            rating=best["rating"],
+            reviews=best["reviews"],
+            deal_pct=best["deal_pct"],
+            reason=reason,
+        )
+
+    except Exception as e:
+        print(f"  [hotels] Error for {dest_code}: {e}")
+        return None
 
 
 def format_lodging_for_notification(lodging: LodgingResult | None) -> str:

@@ -25,10 +25,11 @@ from lodging import LodgingResult, search_airbnb, format_lodging_for_notificatio
 class FlightLeg:
     from_code: str
     to_code: str
-    depart_time: str  # "14:30"
-    arrive_time: str  # "17:26"
+    depart_time: str  # "2:30pm"
+    arrive_time: str  # "5:26pm"
     duration_min: int
     plane: str
+    layover_after_min: int = 0  # layover time before next leg
 
 
 @dataclass
@@ -102,10 +103,26 @@ def _format_time(t) -> str:
     return f"{display_h}:{m:02d}{suffix}"
 
 
+def _to_minutes(dt) -> int | None:
+    """Convert a SimpleDatetime to total minutes since midnight on its date."""
+    if not dt or not dt.time or len(dt.time) < 2 or not dt.date or len(dt.date) < 3:
+        return None
+    day_offset = dt.date[2] * 24 * 60  # day-of-month as rough offset for overnight
+    return day_offset + dt.time[0] * 60 + dt.time[1]
+
+
 def _extract_legs(flight) -> list[FlightLeg]:
-    """Extract leg info from a fast-flights result."""
+    """Extract leg info from a fast-flights result, including layover durations."""
+    raw_legs = flight.flights or []
     legs = []
-    for leg in flight.flights or []:
+    for i, leg in enumerate(raw_legs):
+        layover = 0
+        if i < len(raw_legs) - 1:
+            arr = _to_minutes(leg.arrival)
+            dep_next = _to_minutes(raw_legs[i + 1].departure)
+            if arr is not None and dep_next is not None:
+                layover = max(dep_next - arr, 0)
+
         legs.append(FlightLeg(
             from_code=leg.from_airport.code if leg.from_airport else "?",
             to_code=leg.to_airport.code if leg.to_airport else "?",
@@ -113,6 +130,7 @@ def _extract_legs(flight) -> list[FlightLeg]:
             arrive_time=_format_time(leg.arrival.time) if leg.arrival else "?",
             duration_min=leg.duration or 0,
             plane=leg.plane_type or "",
+            layover_after_min=layover,
         ))
     return legs
 

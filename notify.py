@@ -27,6 +27,16 @@ CATEGORY_COLOR = {
 }
 
 
+def _format_layover(minutes: int) -> str:
+    h = minutes // 60
+    m = minutes % 60
+    if h and m:
+        return f"{h}h{m:02d}m layover"
+    elif h:
+        return f"{h}h layover"
+    return f"{m}m layover"
+
+
 def _format_flight_field(deal: Deal) -> str:
     """Format the flight details including stops/layovers."""
     lines = []
@@ -36,9 +46,16 @@ def _format_flight_field(deal: Deal) -> str:
     if deal.stops == 0:
         lines.append("✅ **Nonstop**")
     elif deal.legs:
-        layover_cities = [leg.to_code for leg in deal.legs[:-1]]
+        # Build "1 stop via MIA (1h32m layover)"
+        layover_parts = []
+        for leg in deal.legs[:-1]:
+            part = leg.to_code
+            if leg.layover_after_min > 0:
+                part += f" ({_format_layover(leg.layover_after_min)})"
+            layover_parts.append(part)
         stop_word = "stop" if deal.stops == 1 else "stops"
-        lines.append(f"🔄 **{deal.stops} {stop_word}** via {' → '.join(layover_cities)}")
+        lines.append(f"🔄 **{deal.stops} {stop_word}** via {', '.join(layover_parts)}")
+
         for i, leg in enumerate(deal.legs):
             dur_h = leg.duration_min // 60
             dur_m = leg.duration_min % 60
@@ -69,6 +86,21 @@ def _format_airbnb_pick(pick) -> dict:
     }
 
 
+def _format_hotel_field(hotel) -> dict:
+    """Format hotel deal as a Discord embed field."""
+    deal_tag = f" 🔥 **{hotel.deal_pct}% off**" if hotel.deal_pct else ""
+    value = (
+        f"**{hotel.name}**{deal_tag}\n"
+        f"${hotel.per_night}/night · ${hotel.total_price:.0f} total\n"
+        f"*{hotel.reason}*"
+    )
+    return {
+        "name": "🏨 Hotel Deal",
+        "value": value,
+        "inline": False,
+    }
+
+
 def build_embed(deal: Deal) -> dict:
     """Build a Discord embed for a deal."""
     emoji = CATEGORY_EMOJI.get(deal.category, "✈️")
@@ -94,19 +126,34 @@ def build_embed(deal: Deal) -> dict:
         for pick in deal.lodging.picks[:3]:
             fields.append(_format_airbnb_pick(pick))
 
-        # Estimated trip total
+        # Hotel deal — only shown if it beats Airbnb
+        if deal.lodging.hotel:
+            fields.append({
+                "name": "─────────────────────────",
+                "value": "👀 **This hotel beats the Airbnbs:**",
+                "inline": False,
+            })
+            fields.append(_format_hotel_field(deal.lodging.hotel))
+
+        # Estimated trip total: flight + (best lodging / 2) since housing is split
         best_lodging = deal.lodging.picks[0].listing
         budget_lodging = deal.lodging.picks[-1].listing
-        total_best = deal.price + best_lodging.total_price
-        total_budget = deal.price + budget_lodging.total_price
+        # Use cheapest overall (could be hotel)
+        cheapest_stay = budget_lodging.total_price
+        if deal.lodging.hotel and deal.lodging.hotel.total_price < cheapest_stay:
+            cheapest_stay = deal.lodging.hotel.total_price
+
+        total_best = deal.price + best_lodging.total_price / 2
+        total_budget = deal.price + cheapest_stay / 2
+
         if total_budget < total_best * 0.85:
             total_str = f"${total_budget:.0f} – ${total_best:.0f}"
         else:
             total_str = f"~${total_best:.0f}"
 
         fields.append({
-            "name": "💵 Estimated Trip Total",
-            "value": f"**{total_str}** (flight + Airbnb for 2 guests)",
+            "name": "💵 Your Cost",
+            "value": f"**{total_str}** (flight + your half of lodging)",
             "inline": False,
         })
 
@@ -158,17 +205,14 @@ def notify_deals(deals: list[Deal]):
         print("\nNo deals found this run.")
         return
 
-    # Sort by price and send the top deals
     best = sorted(deals, key=lambda x: x.price)
 
     print(f"\n=== Sending {min(len(best), 5)} deal notifications to Discord ===")
 
-    # Send top 5 deals as individual embeds (one message per deal for readability)
     for deal in best[:5]:
         embed = build_embed(deal)
         send_discord([embed])
 
-    # If more than 5 deals, send a summary
     if len(best) > 5:
         summary_lines = []
         for d in best[5:15]:
