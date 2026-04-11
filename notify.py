@@ -1,20 +1,14 @@
 """
-Notification via ntfy.sh (free push notifications).
-Install the ntfy app on your phone and subscribe to your topic.
-
-iOS: https://apps.apple.com/app/ntfy/id1625396347
-Android: https://play.google.com/store/apps/details?id=io.heckel.ntfy
+Discord webhook notifications with rich embeds.
 """
 
 import os
 import httpx
-from search import Deal
+from search import Deal, FlightLeg
 from lodging import format_lodging_for_notification
 
 
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
-NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
-NTFY_BASE = "https://ntfy.sh"
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
 
 CATEGORY_EMOJI = {
     "domestic_cities": "🏙️",
@@ -24,109 +18,167 @@ CATEGORY_EMOJI = {
     "europe": "✈️",
 }
 
-
-def _estimate_total(deal: Deal) -> str:
-    """Estimate total trip cost: flights + lodging."""
-    if not deal.lodging or not deal.lodging.airbnb_listings:
-        return ""
-    best_lodging = deal.lodging.airbnb_listings[0]
-    total_low = deal.price + best_lodging.total_price
-    cheapest = min(deal.lodging.airbnb_listings, key=lambda l: l.total_price)
-    total_budget = deal.price + cheapest.total_price
-    if total_budget < total_low * 0.9:
-        return f"\n\n💵 Est. trip total: ${total_budget:.0f}-${total_low:.0f}"
-    return f"\n\n💵 Est. trip total: ~${total_low:.0f}"
+CATEGORY_COLOR = {
+    "domestic_cities": 0xFF6B35,  # orange
+    "central_america": 0x2ECC71,  # green
+    "south_america": 0xE74C3C,   # red
+    "beaches": 0x00BFFF,         # sky blue
+    "europe": 0x9B59B6,          # purple
+}
 
 
-def format_deal(deal: Deal) -> tuple[str, str]:
-    """Return (title, body) for a deal notification."""
+def _format_flight_field(deal: Deal) -> str:
+    """Format the flight details including stops/layovers."""
+    lines = []
+    lines.append(f"**{deal.origin} → {deal.destination_code}** on {deal.airline}")
+    lines.append(f"📅 {deal.depart_date} → {deal.return_date}")
+
+    if deal.stops == 0:
+        lines.append("✅ **Nonstop**")
+    elif deal.legs:
+        layover_cities = [leg.to_code for leg in deal.legs[:-1]]
+        stop_word = "stop" if deal.stops == 1 else "stops"
+        lines.append(f"🔄 **{deal.stops} {stop_word}** via {' → '.join(layover_cities)}")
+        for i, leg in enumerate(deal.legs):
+            dur_h = leg.duration_min // 60
+            dur_m = leg.duration_min % 60
+            dur_str = f"{dur_h}h{dur_m:02d}m" if dur_h else f"{dur_m}m"
+            lines.append(f"` {leg.from_code}→{leg.to_code} ` {leg.depart_time}–{leg.arrive_time} ({dur_str})")
+
+    return "\n".join(lines)
+
+
+def _format_airbnb_pick(pick) -> dict:
+    """Format one Airbnb pick as a Discord embed field."""
+    l = pick.listing
+    rating_str = f" {l.rating}" if l.rating else ""
+    name_line = f"**{l.name}**"
+    price_line = f"${l.per_night}/night · ${l.total_price:.0f} total"
+    reason_line = f"*{pick.reason}*"
+
+    value = f"{name_line}\n{price_line}{rating_str}\n{reason_line}"
+    if l.url:
+        value += f"\n[View listing →]({l.url})"
+
+    label_emoji = {"Top Rated": "⭐", "Best Value": "💎", "Budget Pick": "💰"}.get(pick.label, "🏠")
+
+    return {
+        "name": f"{label_emoji} {pick.label}",
+        "value": value,
+        "inline": False,
+    }
+
+
+def build_embed(deal: Deal) -> dict:
+    """Build a Discord embed for a deal."""
     emoji = CATEGORY_EMOJI.get(deal.category, "✈️")
+    color = CATEGORY_COLOR.get(deal.category, 0x5865F2)
     cat_label = deal.category.replace("_", " ").title()
 
-    title = f"{emoji} ${deal.price} RT — {deal.destination_name}"
+    fields = []
 
-    body = (
-        f"{deal.origin} → {deal.destination_code} ({cat_label})\n"
-        f"{deal.depart_date} → {deal.return_date}\n"
-        f"${deal.price} round trip on {deal.airline}"
-    )
+    # Flight info
+    fields.append({
+        "name": "✈️ Flight",
+        "value": _format_flight_field(deal),
+        "inline": False,
+    })
 
-    # Add lodging info
-    lodging_text = format_lodging_for_notification(deal.lodging)
-    if lodging_text:
-        body += f"\n{lodging_text}"
+    # Airbnb picks (3 options with reasoning)
+    if deal.lodging and deal.lodging.picks:
+        fields.append({
+            "name": "─────────────────────────",
+            "value": f"🏠 **Airbnb Options** ({deal.lodging.nights} nights in {deal.lodging.destination_vibe} area)",
+            "inline": False,
+        })
+        for pick in deal.lodging.picks[:3]:
+            fields.append(_format_airbnb_pick(pick))
 
-    # Add estimated trip total
-    body += _estimate_total(deal)
+        # Estimated trip total
+        best_lodging = deal.lodging.picks[0].listing
+        budget_lodging = deal.lodging.picks[-1].listing
+        total_best = deal.price + best_lodging.total_price
+        total_budget = deal.price + budget_lodging.total_price
+        if total_budget < total_best * 0.85:
+            total_str = f"${total_budget:.0f} – ${total_best:.0f}"
+        else:
+            total_str = f"~${total_best:.0f}"
 
-    return title, body
+        fields.append({
+            "name": "💵 Estimated Trip Total",
+            "value": f"**{total_str}** (flight + Airbnb for 2 guests)",
+            "inline": False,
+        })
+
+        # Link to full Airbnb search
+        fields.append({
+            "name": "",
+            "value": f"[🔍 See all Airbnbs →]({deal.lodging.airbnb_search_url})",
+            "inline": False,
+        })
+
+    embed = {
+        "title": f"{emoji} ${deal.price} Round Trip — {deal.destination_name}",
+        "url": deal.flights_url,
+        "color": color,
+        "fields": fields,
+        "footer": {
+            "text": f"{cat_label} · Tap title to search flights on Google",
+        },
+    }
+
+    return embed
 
 
-def send_ntfy(title: str, body: str, url: str = "") -> bool:
-    """Send a push notification via ntfy.sh."""
-    if not NTFY_TOPIC:
-        print("  [ntfy] NTFY_TOPIC not set, skipping")
+def send_discord(embeds: list[dict]) -> bool:
+    """Send embeds to Discord webhook."""
+    if not DISCORD_WEBHOOK:
+        print("  [discord] DISCORD_WEBHOOK not set, skipping")
         return False
 
-    headers = {"Title": title, "Priority": "high", "Tags": "airplane"}
-    if url:
-        headers["Click"] = url
-    if NTFY_TOKEN:
-        headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
+    payload = {
+        "username": "Flight Deals",
+        "avatar_url": "https://em-content.zobj.net/source/apple/391/airplane_2708-fe0f.png",
+        "embeds": embeds[:10],  # Discord max 10 embeds per message
+    }
 
     try:
-        resp = httpx.post(
-            f"{NTFY_BASE}/{NTFY_TOPIC}",
-            content=body,
-            headers=headers,
-            timeout=10,
-        )
+        resp = httpx.post(DISCORD_WEBHOOK, json=payload, timeout=10)
         resp.raise_for_status()
-        print(f"  [ntfy] Sent: {title}")
+        print(f"  [discord] Sent {len(embeds)} embed(s)")
         return True
     except Exception as e:
-        print(f"  [ntfy] Error: {e}")
+        print(f"  [discord] Error: {e}")
         return False
-
-
-def send_summary(deals: list[Deal]) -> bool:
-    """Send a summary notification when multiple deals are found."""
-    if not deals:
-        return False
-
-    title = f"🔥 {len(deals)} flight deal{'s' if len(deals) > 1 else ''} found!"
-    lines = []
-    for d in sorted(deals, key=lambda x: x.price):
-        emoji = CATEGORY_EMOJI.get(d.category, "✈️")
-        lodging_hint = ""
-        if d.lodging and d.lodging.airbnb_listings:
-            best = d.lodging.airbnb_listings[0]
-            lodging_hint = f" + ~${best.per_night}/n Airbnb"
-        lines.append(
-            f"{emoji} ${d.price} {d.origin}→{d.destination_name} ({d.depart_date}){lodging_hint}"
-        )
-
-    body = "\n".join(lines[:15])
-    if len(deals) > 15:
-        body += f"\n...and {len(deals) - 15} more"
-
-    return send_ntfy(title, body)
 
 
 def notify_deals(deals: list[Deal]):
-    """Send notifications for all deals found."""
+    """Send Discord notifications for all deals found."""
     if not deals:
         print("\nNo deals found this run.")
         return
 
-    print(f"\n=== Sending {len(deals)} notifications ===")
+    # Sort by price and send the top deals
+    best = sorted(deals, key=lambda x: x.price)
 
-    # Send individual notifications for the best deals (top 5 by price)
-    best = sorted(deals, key=lambda x: x.price)[:5]
-    for deal in best:
-        title, body = format_deal(deal)
-        send_ntfy(title, body, url=deal.flights_url)
+    print(f"\n=== Sending {min(len(best), 5)} deal notifications to Discord ===")
 
-    # If there are more than 5, also send a summary
-    if len(deals) > 5:
-        send_summary(deals)
+    # Send top 5 deals as individual embeds (one message per deal for readability)
+    for deal in best[:5]:
+        embed = build_embed(deal)
+        send_discord([embed])
+
+    # If more than 5 deals, send a summary
+    if len(best) > 5:
+        summary_lines = []
+        for d in best[5:15]:
+            emoji = CATEGORY_EMOJI.get(d.category, "✈️")
+            stops = " (nonstop)" if d.stops == 0 else f" ({d.stops} stop{'s' if d.stops != 1 else ''})"
+            summary_lines.append(f"{emoji} **${d.price}** {d.origin}→{d.destination_name}{stops} ({d.depart_date})")
+
+        summary_embed = {
+            "title": f"📋 {len(best) - 5} More Deal{'s' if len(best) - 5 > 1 else ''}",
+            "description": "\n".join(summary_lines),
+            "color": 0x5865F2,
+        }
+        send_discord([summary_embed])

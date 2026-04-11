@@ -24,6 +24,5 @@ jobs:
 
       - name: Search for deals
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python main.py

@@ -22,6 +22,16 @@ from lodging import LodgingResult, search_airbnb, format_lodging_for_notificatio
 
 
 @dataclass
+class FlightLeg:
+    from_code: str
+    to_code: str
+    depart_time: str  # "14:30"
+    arrive_time: str  # "17:26"
+    duration_min: int
+    plane: str
+
+
+@dataclass
 class Deal:
     origin: str
     destination_code: str
@@ -33,6 +43,8 @@ class Deal:
     threshold: int
     airline: str
     flights_url: str
+    stops: int = 0
+    legs: list[FlightLeg] | None = None
     lodging: LodgingResult | None = None
 
 
@@ -80,11 +92,43 @@ def build_google_flights_url(origin: str, dest: str, depart: str, ret: str) -> s
     )
 
 
+def _format_time(t) -> str:
+    """Format a SimpleDatetime time list like [14, 30] to '2:30pm'."""
+    if not t or len(t) < 2:
+        return "?"
+    h, m = t[0], t[1]
+    suffix = "am" if h < 12 else "pm"
+    display_h = h % 12 or 12
+    return f"{display_h}:{m:02d}{suffix}"
+
+
+def _extract_legs(flight) -> list[FlightLeg]:
+    """Extract leg info from a fast-flights result."""
+    legs = []
+    for leg in flight.flights or []:
+        legs.append(FlightLeg(
+            from_code=leg.from_airport.code if leg.from_airport else "?",
+            to_code=leg.to_airport.code if leg.to_airport else "?",
+            depart_time=_format_time(leg.departure.time) if leg.departure else "?",
+            arrive_time=_format_time(leg.arrival.time) if leg.arrival else "?",
+            duration_min=leg.duration or 0,
+            plane=leg.plane_type or "",
+        ))
+    return legs
+
+
+@dataclass
+class SearchResult:
+    price: int
+    airline: str
+    stops: int
+    legs: list[FlightLeg]
+
+
 def search_route(
     origin: str, dest: str, depart: str, ret: str, min_depart_hour: int | None = None
-) -> tuple[int | None, str]:
-    """Search a single round-trip route. Returns (cheapest_price, airline) or (None, '').
-    If min_depart_hour is set, only considers flights departing at or after that hour."""
+) -> SearchResult | None:
+    """Search a single round-trip route. Returns best result or None."""
     try:
         query = create_query(
             flights=[
@@ -99,8 +143,7 @@ def search_route(
         results = get_flights(query)
 
         if results:
-            best_price = None
-            best_airline = ""
+            best: SearchResult | None = None
             for flight in results:
                 if not (flight.price and flight.price > 0):
                     continue
@@ -111,14 +154,19 @@ def search_route(
                         if outbound.departure.time[0] < min_depart_hour:
                             continue
                     else:
-                        continue  # skip if no time info
-                if best_price is None or flight.price < best_price:
-                    best_price = flight.price
-                    best_airline = ", ".join(flight.airlines) if flight.airlines else ""
-            return best_price, best_airline
+                        continue
+                if best is None or flight.price < best.price:
+                    legs = _extract_legs(flight)
+                    best = SearchResult(
+                        price=flight.price,
+                        airline=", ".join(flight.airlines) if flight.airlines else "",
+                        stops=max(len(legs) - 1, 0),
+                        legs=legs,
+                    )
+            return best
     except Exception as e:
         print(f"  Error searching {origin}->{dest} ({depart}): {e}")
-    return None, ""
+    return None
 
 
 def search_all() -> list[Deal]:
@@ -144,17 +192,18 @@ def search_all() -> list[Deal]:
                         end=" ", flush=True,
                     )
 
-                    price, airline = search_route(
+                    result = search_route(
                         origin, dest_code,
                         trip.depart_date, trip.return_date,
                         min_depart_hour=trip.min_depart_hour,
                     )
 
-                    if price is None:
+                    if result is None:
                         print("no results")
                         errors += 1
-                    elif price <= threshold:
-                        print(f"${price} ({airline}) *** DEAL ***")
+                    elif result.price <= threshold:
+                        stops_str = f" ({result.stops} stop{'s' if result.stops != 1 else ''})" if result.stops else " (nonstop)"
+                        print(f"${result.price} ({result.airline}){stops_str} *** DEAL ***")
                         deals.append(Deal(
                             origin=origin,
                             destination_code=dest_code,
@@ -162,16 +211,18 @@ def search_all() -> list[Deal]:
                             category=category,
                             depart_date=trip.depart_date,
                             return_date=trip.return_date,
-                            price=price,
+                            price=result.price,
                             threshold=threshold,
-                            airline=airline,
+                            airline=result.airline,
+                            stops=result.stops,
+                            legs=result.legs,
                             flights_url=build_google_flights_url(
                                 origin, dest_code,
                                 trip.depart_date, trip.return_date,
                             ),
                         ))
                     else:
-                        print(f"${price}")
+                        print(f"${result.price}")
 
                     # Rate limiting
                     delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)

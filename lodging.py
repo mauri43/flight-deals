@@ -3,6 +3,7 @@ Lodging search: Airbnb (direct scrape) + Amadeus hotels.
 Searches for accommodation near destinations when a flight deal is found.
 """
 
+import base64
 import json
 import os
 import re
@@ -95,8 +96,16 @@ class AirbnbListing:
 
 
 @dataclass
+class AirbnbPick:
+    listing: AirbnbListing
+    label: str     # "Top Rated", "Best Value", "Budget Pick"
+    reason: str    # why this one
+
+
+@dataclass
 class LodgingResult:
     airbnb_listings: list[AirbnbListing]
+    picks: list[AirbnbPick]  # 3 curated picks with reasoning
     airbnb_search_url: str
     nights: int
     destination_vibe: str
@@ -175,7 +184,17 @@ def search_airbnb(
 
             name = item.get("title", "") or item.get("nameLocalized", "")
             rating = item.get("avgRatingLocalized", "")
-            property_id = item.get("propertyId", "")
+
+            # Extract listing ID from base64-encoded demandStayListing.id
+            property_id = ""
+            dsl = item.get("demandStayListing") or {}
+            encoded_id = dsl.get("id", "")
+            if encoded_id:
+                try:
+                    decoded = base64.b64decode(encoded_id).decode()
+                    property_id = decoded.split(":")[-1]
+                except Exception:
+                    pass
 
             # Parse price
             price_data = item.get("structuredDisplayPrice") or {}
@@ -240,8 +259,12 @@ def search_airbnb(
         # Build the full search URL for the notification link
         full_url = search_url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
+        # Select 3 curated picks with reasoning
+        picks = _select_picks(listings, vibe)
+
         return LodgingResult(
-            airbnb_listings=listings[:5],  # top 5
+            airbnb_listings=listings[:10],
+            picks=picks,
             airbnb_search_url=full_url,
             nights=nights,
             destination_vibe=vibe,
@@ -250,6 +273,93 @@ def search_airbnb(
     except Exception as e:
         print(f"  [airbnb] Error for {dest_code}: {e}")
         return None
+
+
+def _rating_num(listing: AirbnbListing) -> float:
+    """Extract numeric rating from '4.96 (50)' format."""
+    if not listing.rating:
+        return 0.0
+    try:
+        return float(listing.rating.split("(")[0].strip())
+    except ValueError:
+        return 0.0
+
+
+def _review_count(listing: AirbnbListing) -> int:
+    """Extract review count from '4.96 (50)' format."""
+    match = re.search(r"\((\d+)\)", listing.rating or "")
+    return int(match.group(1)) if match else 0
+
+
+def _select_picks(listings: list[AirbnbListing], vibe: str) -> list[AirbnbPick]:
+    """Select 3 picks: Top Rated, Best Value, Budget Pick — each with reasoning."""
+    if not listings:
+        return []
+
+    picks: list[AirbnbPick] = []
+    used: set[int] = set()  # track by index to avoid dedup issues with empty URLs
+
+    # 1. TOP RATED — highest rating with meaningful review count
+    rated = [
+        (i, l) for i, l in enumerate(listings) if _review_count(l) >= 10
+    ]
+    rated.sort(key=lambda x: (-_rating_num(x[1]), -_review_count(x[1])))
+    if not rated:
+        rated = [(i, l) for i, l in enumerate(listings)]
+        rated.sort(key=lambda x: -_rating_num(x[1]))
+
+    if rated:
+        idx, top = rated[0]
+        r = _rating_num(top)
+        reviews = _review_count(top)
+        badge_note = f", {top.badge}" if top.badge else ""
+        reason = f"{r}★ across {reviews} reviews{badge_note} — highest rated in the area"
+        picks.append(AirbnbPick(listing=top, label="Top Rated", reason=reason))
+        used.add(idx)
+
+    # 2. BEST VALUE — best rating-to-price ratio (not already picked)
+    def value_ratio(l: AirbnbListing) -> float:
+        r = _rating_num(l)
+        if r == 0 or l.total_price <= 0:
+            return 0
+        return (r * _review_count(l) ** 0.3) / l.total_price
+
+    remaining = [(i, l) for i, l in enumerate(listings) if i not in used]
+    remaining.sort(key=lambda x: -value_ratio(x[1]))
+
+    if remaining:
+        idx, val = remaining[0]
+        r = _rating_num(val)
+        reason = f"{r}★ at ${val.per_night}/night — strong reviews at a great price"
+        if val.badge:
+            reason += f" ({val.badge})"
+        picks.append(AirbnbPick(listing=val, label="Best Value", reason=reason))
+        used.add(idx)
+
+    # 3. BUDGET PICK — cheapest remaining with decent rating (>= 4.0)
+    budget = [(i, l) for i, l in enumerate(listings) if i not in used and _rating_num(l) >= 4.0]
+    budget.sort(key=lambda x: x[1].total_price)
+    if not budget:
+        budget = [(i, l) for i, l in enumerate(listings) if i not in used]
+        budget.sort(key=lambda x: x[1].total_price)
+
+    if budget:
+        idx, bud = budget[0]
+        r = _rating_num(bud)
+        savings = ""
+        if picks and picks[0].listing.total_price > 0:
+            pct = int((1 - bud.total_price / picks[0].listing.total_price) * 100)
+            if pct > 10:
+                savings = f", {pct}% less than top pick"
+        reason = f"Cheapest at ${bud.per_night}/night"
+        if r >= 4.5:
+            reason += f", still a solid {r}★"
+        elif r > 0:
+            reason += f" ({r}★)"
+        reason += savings
+        picks.append(AirbnbPick(listing=bud, label="Budget Pick", reason=reason))
+
+    return picks
 
 
 def _find_nested(d, target, depth=0):
