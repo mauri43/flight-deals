@@ -7,7 +7,7 @@ Edit destinations, thresholds, and preferences here.
 HOME_AIRPORTS = ["DCA", "IAD", "BWI"]
 
 # How many upcoming weekends to search (Fri→Sun and Fri→Mon combos)
-WEEKENDS_AHEAD = 6
+WEEKENDS_AHEAD = 5
 
 # Max price (round trip USD) to trigger a notification per category
 PRICE_THRESHOLDS = {
@@ -96,8 +96,8 @@ DESTINATIONS = {
 }
 
 # Delay between API requests (seconds) to avoid rate limiting
-REQUEST_DELAY_MIN = 2.0
-REQUEST_DELAY_MAX = 5.0
+REQUEST_DELAY_MIN = 1.5
+REQUEST_DELAY_MAX = 2.0
 
 
 def load_all_destinations() -> dict[str, list[tuple[str, str]]]:

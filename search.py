@@ -80,7 +80,6 @@ def get_upcoming_trips(weeks: int = WEEKENDS_AHEAD) -> list[WeekendTrip]:
         trips.append(WeekendTrip(fri, sun, "Fri->Sun"))
         trips.append(WeekendTrip(fri, mon, "Fri->Mon"))
         trips.append(WeekendTrip(thu, sun, "Thu->Sun", min_depart_hour=17))
-        trips.append(WeekendTrip(thu, mon, "Thu->Mon", min_depart_hour=17))
 
     return trips
 
