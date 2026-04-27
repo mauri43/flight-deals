@@ -95,6 +95,9 @@ DESTINATIONS = {
     ],
 }
 
+# Max stops allowed (0 = nonstop only, 1 = one layover max)
+MAX_STOPS = 1
+
 # Delay between API requests (seconds) to avoid rate limiting
 REQUEST_DELAY_MIN = 1.5
 REQUEST_DELAY_MAX = 2.0

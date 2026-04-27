@@ -12,6 +12,7 @@ from fast_flights import FlightQuery, Passengers, create_query, get_flights
 
 from config import (
     HOME_AIRPORTS,
+    MAX_STOPS,
     PRICE_THRESHOLDS,
     WEEKENDS_AHEAD,
     REQUEST_DELAY_MIN,
@@ -172,12 +173,15 @@ def search_route(
                             continue
                     else:
                         continue
+                legs = _extract_legs(flight)
+                stops = max(len(legs) - 1, 0)
+                if stops > MAX_STOPS:
+                    continue
                 if best is None or flight.price < best.price:
-                    legs = _extract_legs(flight)
                     best = SearchResult(
                         price=flight.price,
                         airline=", ".join(flight.airlines) if flight.airlines else "",
-                        stops=max(len(legs) - 1, 0),
+                        stops=stops,
                         legs=legs,
                     )
             return best
