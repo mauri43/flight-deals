@@ -27,13 +27,12 @@ def main():
     if deals:
         log_deals(deals)
 
-    # Only send immediate alerts for exceptional deals — 20%+ below threshold
-    great_deals = [d for d in deals if d.price <= d.threshold * 0.80]
-    if great_deals:
-        print(f"\n🔥 {len(great_deals)} exceptional deal(s) found — alerting now!")
-        notify_deals(great_deals)
+    # Send immediate alerts for any deal under threshold
+    if deals:
+        print(f"\n🔥 {len(deals)} deal(s) found — alerting now!")
+        notify_deals(deals)
     else:
-        print(f"\n{len(deals)} deals logged for daily brief, none exceptional enough for immediate alert.")
+        print("\nNo deals under threshold this run.")
 
     return 0
 
